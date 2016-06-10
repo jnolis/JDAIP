@@ -20,6 +20,25 @@ module SharedCode =
 
     let solutionLocation () = getUpLocation 3
 
+
+module Ip = 
+    let private webClient = new System.Net.WebClient()
+    let private regex = new Regex("\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}")
+    let getIpAddress () = 
+        try
+            "http://checkip.dyndns.org/"
+            |> webClient.DownloadString
+            |> regex.Match
+            |> (fun x -> 
+                let address = x.Value
+                if System.String.IsNullOrEmpty address then None else Some address)
+        with | _ -> None
+    let makeMessage () = 
+        match getIpAddress () with
+        | Some address -> "Address as of " + System.DateTime.Now.ToString() + ": " + address
+        | None -> "Failed to get IP address at " + System.DateTime.Now.ToString()
+
+
 module Twitter = 
     let getCredentials () = 
         System.IO.Path.GetFullPath (SharedCode.solutionLocation() + @"Keys.json")
@@ -35,20 +54,36 @@ module Twitter =
     do setCredentials()
     let sendTweet(text:string) = Tweet.PublishTweet(text) |> ignore
         
-module Ip = 
-    let private webClient = new System.Net.WebClient()
-    let private regex = new Regex("\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}")
-    let getIpAddress () = 
-        "http://checkip.dyndns.org/"
-        |> webClient.DownloadString
-        |> regex.Match
-        |> (fun x -> x.Value)
+
+    let startDmListener () =
+        let eventFunction (eventArgs:Tweetinvi.Core.Events.EventArguments.MessageEventArgs) : unit =
+            do Message.PublishMessage(Ip.makeMessage(),eventArgs.Message.SenderId) |> ignore
+            System.Diagnostics.Debug.Write ("Recieved a DM from " + eventArgs.Message.SenderScreenName + ": " + eventArgs.Message.Text)
+
+        let stream = Tweetinvi.Stream.CreateUserStream()
+        do stream.MessageReceived.Add(eventFunction)
+
+        do async { 
+                let credentials = getCredentials()
+                do stream.Credentials <- credentials
+                do stream.StartStream()
+                return ()
+                }
+        |> Async.Start
+        |> ignore
+
     
 module Program =    
     [<EntryPoint>]
     let main (args) =
+        do Twitter.startDmListener()
         do Seq.initInfinite id
-            |> Seq.iter (fun x ->         
-                do Twitter.sendTweet (Ip.getIpAddress())
-                do System.Threading.Thread.Sleep (3600*1000))
+            |> Seq.iter (fun x ->
+                async {
+                    do Twitter.sendTweet (Ip.makeMessage())
+                    return()
+                }
+                |> Async.Start
+                |> ignore
+                do System.Threading.Thread.Sleep (6*3600*1000))
         0
